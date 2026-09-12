@@ -23,6 +23,7 @@ typedef union {
 
 typedef struct {
     bool active;
+    bool pairing;
     uint32_t started;
     uint16_t duration;
     uint16_t interval;
@@ -33,6 +34,8 @@ typedef struct {
 static confinfo_t confinfo;
 static wireless_indicator_t wireless_indicator;
 static uint32_t post_init_timer;
+static bool battery_indicator_active;
+static uint32_t battery_indicator_started;
 bool charging_state;
 bool lower_sleep;
 static bool usb_suspend_rgb_active;
@@ -42,6 +45,9 @@ static void clean_wireless_housekeeping(void);
 static bool is_supported_device(uint8_t device) {
     return device == DEVS_USB || device == DEVS_BT1 || device == DEVS_BT2 || device == DEVS_BT3 || device == DEVS_2G4;
 }
+static bool is_supported_bt_device(uint8_t device) {
+    return device >= DEVS_BT1 && device <= DEVS_BT3;
+}
 
 static void eeconfig_confinfo_update(void) {
     eeconfig_update_kb(confinfo.raw);
@@ -49,7 +55,7 @@ static void eeconfig_confinfo_update(void) {
 
 static void eeconfig_confinfo_init(void) {
     confinfo.raw = eeconfig_read_kb();
-    if (!confinfo.flag || !is_supported_device(confinfo.devs)) {
+    if (!confinfo.flag || !is_supported_device(confinfo.devs) || !is_supported_bt_device(confinfo.last_btdevs)) {
         confinfo.raw = 0;
         confinfo.flag = true;
         confinfo.devs = DEVS_USB;
@@ -60,6 +66,7 @@ static void eeconfig_confinfo_init(void) {
 
 static void wireless_indicator_start(uint8_t device, bool pairing) {
     wireless_indicator.active = true;
+    wireless_indicator.pairing = pairing;
     wireless_indicator.started = timer_read32();
     wireless_indicator.duration = pairing ? 3000 : 750;
     wireless_indicator.interval = pairing ? 200 : 125;
@@ -112,6 +119,15 @@ static bool has_pre_encoder_via_layout(void) {
 }
 
 void via_init_kb(void) {
+    // Match the official keymap's direct wireless controls. Reserve these
+    // EEPROM cells so an older VIA layout cannot hide recovery shortcuts.
+    dynamic_keymap_set_keycode(1, 1, 1, KC_BT1);
+    dynamic_keymap_set_keycode(1, 1, 2, KC_BT2);
+    dynamic_keymap_set_keycode(1, 1, 3, KC_BT3);
+    dynamic_keymap_set_keycode(1, 1, 4, KC_USB);
+    dynamic_keymap_set_keycode(1, 1, 10, KC_2G4);
+    dynamic_keymap_set_keycode(1, 2, 12, HS_BATQ);
+
     if (!has_pre_encoder_via_layout()) {
         return;
     }
@@ -132,6 +148,10 @@ void via_init_kb(void) {
 
 void keyboard_post_init_kb(void) {
     eeconfig_confinfo_init();
+    // The module's native 8-byte keyboard report is the reliable path on
+    // this QMK revision. Avoid the legacy NKRO-to-6KRO re-entrant adapter.
+    keymap_config.nkro = false;
+    uint8_t startup_device = confinfo.devs;
 
 #    ifdef LED_POWER_EN_PIN
     gpio_set_pin_output(LED_POWER_EN_PIN);
@@ -148,13 +168,19 @@ void keyboard_post_init_kb(void) {
 #    endif
 #    ifdef HS_BAT_CABLE_PIN
     gpio_set_pin_input(HS_BAT_CABLE_PIN);
+    charging_state = gpio_read_pin(HS_BAT_CABLE_PIN);
+    if (charging_state) {
+        startup_device = DEVS_USB;
+    } else if (startup_device == DEVS_USB) {
+        startup_device = DEVS_2G4;
+    }
 #    endif
 #    ifdef BAT_FULL_PIN
     gpio_set_pin_input(BAT_FULL_PIN);
 #    endif
 
     wireless_init();
-    wireless_devs_change(!confinfo.devs, confinfo.devs, false);
+    wireless_devs_change(!startup_device, startup_device, false);
     post_init_timer = timer_read32();
     keyboard_post_init_user();
 }
@@ -298,7 +324,20 @@ static bool process_record_wireless(uint16_t keycode, keyrecord_t *record) {
 }
 
 bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
-    return process_record_user(keycode, record) && process_record_wireless(keycode, record);
+    if (!process_record_user(keycode, record)) {
+        return false;
+    }
+
+    if (keycode == HS_BATQ) {
+        if (record->event.pressed && wireless_get_current_devs() != DEVS_USB) {
+            md_inquire_bat();
+            battery_indicator_active = true;
+            battery_indicator_started = timer_read32();
+        }
+        return false;
+    }
+
+    return process_record_wireless(keycode, record);
 }
 
 static void clean_wireless_housekeeping(void) {
@@ -362,10 +401,57 @@ bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
         return false;
     }
 
+    if (battery_indicator_active) {
+        static const uint8_t battery_leds[10] = RGB_MATRIX_BAT_INDEX_MAP;
+        uint32_t elapsed = timer_elapsed32(battery_indicator_started);
+
+        if (elapsed >= 3000) {
+            battery_indicator_active = false;
+        } else {
+            uint8_t battery = *md_getp_bat();
+            uint8_t lit = battery / 10;
+            if (lit == 0) {
+                lit = 1;
+            }
+
+            for (uint8_t i = 0; i < ARRAY_SIZE(battery_leds); i++) {
+                uint8_t index = battery_leds[i];
+                if (index >= led_min && index < led_max) {
+                    if (i < lit) {
+                        if (battery >= 30) {
+                            rgb_matrix_set_color(index, 0, 150, 0);
+                        } else {
+                            rgb_matrix_set_color(index, 150, 0, 0);
+                        }
+                    } else {
+                        rgb_matrix_set_color(index, 0, 0, 0);
+                    }
+                }
+            }
+        }
+    }
+
     if (wireless_indicator.active) {
         uint32_t elapsed = timer_elapsed32(wireless_indicator.started);
         if (elapsed >= wireless_indicator.duration) {
-            wireless_indicator.active = false;
+            if (wireless_indicator.pairing) {
+                // Show the result after the white pairing pattern:
+                // green = connected, red = no UART reply, amber = module
+                // replied but the radio link is still disconnected.
+                wireless_indicator.pairing = false;
+                wireless_indicator.started = timer_read32();
+                wireless_indicator.duration = 2000;
+                wireless_indicator.interval = 2000;
+                if (*md_getp_state() == MD_STATE_CONNECTED) {
+                    wireless_indicator.color = (RGB){RGB_GREEN};
+                } else if (md_get_version() == 0) {
+                    wireless_indicator.color = (RGB){RGB_RED};
+                } else {
+                    wireless_indicator.color = (RGB){RGB_GOLD};
+                }
+            } else {
+                wireless_indicator.active = false;
+            }
         } else if (wireless_indicator.index >= led_min && wireless_indicator.index < led_max && (elapsed / wireless_indicator.interval) % 2 == 0) {
             rgb_matrix_set_color(wireless_indicator.index, wireless_indicator.color.r, wireless_indicator.color.g, wireless_indicator.color.b);
         }

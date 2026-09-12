@@ -72,22 +72,22 @@ void usb_transport_enable(bool enable) {
 }
 
 void set_transport(transport_t new_transport) {
+    transport = new_transport;
 
-    if (transport != new_transport) {
-        transport = new_transport;
-
-        switch (transport) {
-            case TRANSPORT_USB: {
-                wls_transport_enable(false);
-                usb_transport_enable(true);
-            } break;
-            case TRANSPORT_WLS: {
-                usb_transport_enable(false);
-                wls_transport_enable(true);
-            } break;
-            default:
-                break;
-        }
+    // protocol_post_init() installs the USB driver after keyboard_post_init_kb().
+    // Reapply the selected transport even when the enum has not changed, because
+    // the actual host driver may have been replaced behind our back.
+    switch (transport) {
+        case TRANSPORT_USB:
+            wls_transport_enable(false);
+            usb_transport_enable(true);
+            break;
+        case TRANSPORT_WLS:
+            usb_transport_enable(false);
+            wls_transport_enable(true);
+            break;
+        default:
+            break;
     }
 }
 

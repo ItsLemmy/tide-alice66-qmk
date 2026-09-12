@@ -211,11 +211,10 @@ void wireless_devs_change_kb(uint8_t old_devs, uint8_t new_devs, bool reset) __a
 void wireless_devs_change_kb(uint8_t old_devs, uint8_t new_devs, bool reset) {}
 
 void wireless_devs_change(uint8_t old_devs, uint8_t new_devs, bool reset) {
-    bool changed = (old_devs == DEVS_USB) ? (new_devs != DEVS_USB) : (new_devs == DEVS_USB);
-
-    if (changed) {
-        set_transport((new_devs != DEVS_USB) ? TRANSPORT_WLS : TRANSPORT_USB);
-    }
+    // The selected device is the source of truth. Reassert the host driver
+    // even for same-device reconnects instead of trusting the caller's
+    // old-device argument to describe the current transport.
+    set_transport((new_devs != DEVS_USB) ? TRANSPORT_WLS : TRANSPORT_USB);
 
     if ((wls_devs != new_devs) || reset) {
         *md_getp_state()     = MD_STATE_DISCONNECTED;
@@ -301,6 +300,18 @@ void wireless_task(void) {
 }
 
 void housekeeping_task_kb(void) {
-    if (wireless_get_current_devs() == DEVS_USB && im_test_rate_flag) usb_mode_test_report_task();
+    bool usb_mode = wireless_get_current_devs() == DEVS_USB;
+
+    if (usb_mode && im_test_rate_flag) {
+        usb_mode_test_report_task();
+    }
+
+#ifdef WIRELESS_USB_IDLE_TASK_DISABLE
+    if (usb_mode && !smsg_is_busy()) {
+        housekeeping_task_user();
+        return;
+    }
+#endif
+
     wireless_task();
 }

@@ -58,12 +58,10 @@
 #define HS_RGB_BLINK_INDEX_MAC 25
 
 /* UART */
-#ifdef TIDE_ALICE66_CLEAN_WIRELESS
-#    define SERIAL_DRIVER SD3
-#    define UART_DRIVER SD3
-#else
-#    define SERIAL_DRIVER SD1
-#endif
+#define SERIAL_DRIVER SD3
+// QMK's UART API uses UART_DRIVER; the official board file only names
+// SERIAL_DRIVER, so bind both to the PCB's UART3 peripheral.
+#define UART_DRIVER SD3
 #define SD1_TX_PIN C10
 #define SD1_RX_PIN C11
 

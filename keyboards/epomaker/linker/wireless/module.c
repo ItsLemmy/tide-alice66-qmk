@@ -484,13 +484,14 @@ void md_devs_change(uint8_t devs, bool reset) {
         case DEVS_2G4: {
             md_send_devctrl(MD_SND_CMD_DEVCTRL_2G4);
             if (reset) {
-                // if (md_get_version() < 48) {
-                //     md_send_manufacturer(MD_DONGLE_MANUFACTURER, strlen(MD_DONGLE_MANUFACTURER));
-                //     md_send_product(MD_DONGLE_PRODUCT, strlen(MD_DONGLE_PRODUCT));
-                // } else { // Add Unicode character support starting from v48.
+                if (md_get_version() < 48) {
+                    md_send_manufacturer(MD_DONGLE_MANUFACTURER, strlen(MD_DONGLE_MANUFACTURER));
+                    md_send_product(MD_DONGLE_PRODUCT, strlen(MD_DONGLE_PRODUCT));
+                } else {
+                    // Module firmware v48 added Unicode descriptor support.
                     md_send_manufacturer((char *)USBSTR(MD_DONGLE_MANUFACTURER), sizeof(USBSTR(MD_DONGLE_MANUFACTURER)));
                     md_send_product((char *)USBSTR(MD_DONGLE_PRODUCT), sizeof(USBSTR(MD_DONGLE_PRODUCT)));
-                // }
+                }
                 md_send_vpid(VENDOR_ID, PRODUCT_ID);
                 md_send_devctrl(MD_SND_CMD_DEVCTRL_CLEAN);
                 md_send_devctrl(MD_SND_CMD_DEVCTRL_PAIR);
