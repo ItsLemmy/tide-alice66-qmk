@@ -58,7 +58,12 @@
 #define HS_RGB_BLINK_INDEX_MAC 25
 
 /* UART */
-#define SERIAL_DRIVER SD1
+#ifdef TIDE_ALICE66_CLEAN_WIRELESS
+#    define SERIAL_DRIVER SD3
+#    define UART_DRIVER SD3
+#else
+#    define SERIAL_DRIVER SD1
+#endif
 #define SD1_TX_PIN C10
 #define SD1_RX_PIN C11
 

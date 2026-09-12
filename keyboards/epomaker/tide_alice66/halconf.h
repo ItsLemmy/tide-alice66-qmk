@@ -3,7 +3,11 @@
 
 #pragma once
 
-#define HAL_USE_SERIAL    TRUE
+#ifdef TIDE_ALICE66_WIRED_ONLY
+#    define HAL_USE_SERIAL FALSE
+#else
+#    define HAL_USE_SERIAL TRUE
+#endif
 #define HAL_USE_SPI       TRUE
 #define PAL_USE_CALLBACKS TRUE
 

@@ -1,6 +1,405 @@
 // Copyright 2024 SDK (@sdk66)
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#ifdef TIDE_ALICE66_CLEAN_WIRELESS
+#    include QMK_KEYBOARD_H
+#    include "control/control.h"
+#    include "dynamic_keymap.h"
+#    include "nvm_via.h"
+#    include "usb_main.h"
+#    include "via.h"
+#    include "wireless.h"
+
+typedef union {
+    uint32_t raw;
+    struct {
+        uint8_t flag : 1;
+        uint8_t devs : 3;
+        uint8_t record_channel : 4;
+        uint8_t record_last_mode;
+        uint8_t last_btdevs : 3;
+    };
+} confinfo_t;
+
+typedef struct {
+    bool active;
+    uint32_t started;
+    uint16_t duration;
+    uint16_t interval;
+    uint8_t index;
+    RGB color;
+} wireless_indicator_t;
+
+static confinfo_t confinfo;
+static wireless_indicator_t wireless_indicator;
+static uint32_t post_init_timer;
+bool charging_state;
+bool lower_sleep;
+static bool usb_suspend_rgb_active;
+static bool usb_suspend_rgb_was_enabled;
+static void clean_wireless_housekeeping(void);
+
+static bool is_supported_device(uint8_t device) {
+    return device == DEVS_USB || device == DEVS_BT1 || device == DEVS_BT2 || device == DEVS_BT3 || device == DEVS_2G4;
+}
+
+static void eeconfig_confinfo_update(void) {
+    eeconfig_update_kb(confinfo.raw);
+}
+
+static void eeconfig_confinfo_init(void) {
+    confinfo.raw = eeconfig_read_kb();
+    if (!confinfo.flag || !is_supported_device(confinfo.devs)) {
+        confinfo.raw = 0;
+        confinfo.flag = true;
+        confinfo.devs = DEVS_USB;
+        confinfo.last_btdevs = DEVS_BT1;
+        eeconfig_confinfo_update();
+    }
+}
+
+static void wireless_indicator_start(uint8_t device, bool pairing) {
+    wireless_indicator.active = true;
+    wireless_indicator.started = timer_read32();
+    wireless_indicator.duration = pairing ? 3000 : 750;
+    wireless_indicator.interval = pairing ? 200 : 125;
+
+    switch (device) {
+        case DEVS_BT1:
+            wireless_indicator.index = g_led_config.matrix_co[0][1];
+            wireless_indicator.color = (RGB){HS_PAIR_COLOR_BT1};
+            break;
+        case DEVS_BT2:
+            wireless_indicator.index = g_led_config.matrix_co[0][2];
+            wireless_indicator.color = (RGB){HS_PAIR_COLOR_BT2};
+            break;
+        case DEVS_BT3:
+            wireless_indicator.index = g_led_config.matrix_co[0][3];
+            wireless_indicator.color = (RGB){HS_PAIR_COLOR_BT3};
+            break;
+        case DEVS_2G4:
+            wireless_indicator.index = g_led_config.matrix_co[0][4];
+            wireless_indicator.color = (RGB){HS_PAIR_COLOR_2G4};
+            break;
+        default:
+            wireless_indicator.index = g_led_config.matrix_co[0][5];
+            wireless_indicator.color = (RGB){RGB_WHITE};
+            break;
+    }
+}
+
+void wireless_devs_change_kb(uint8_t old_devs, uint8_t new_devs, bool reset) {
+    (void)old_devs;
+
+    if (is_supported_device(new_devs)) {
+        confinfo.devs = new_devs;
+        if (new_devs >= DEVS_BT1 && new_devs <= DEVS_BT3) {
+            confinfo.last_btdevs = new_devs;
+        }
+        eeconfig_confinfo_update();
+        wireless_indicator_start(new_devs, reset);
+    }
+}
+
+#    if defined(VIA_ENABLE) && defined(ENCODER_MAP_ENABLE)
+static bool has_pre_encoder_via_layout(void) {
+    uint8_t magic0;
+    uint8_t magic1;
+    uint8_t magic2;
+
+    nvm_via_read_magic(&magic0, &magic1, &magic2);
+    return magic0 == 0x26 && magic1 == 0x09 && magic2 == 0x10;
+}
+
+void via_init_kb(void) {
+    if (!has_pre_encoder_via_layout()) {
+        return;
+    }
+
+    dynamic_keymap_set_encoder(0, 0, true, KC_VOLU);
+    dynamic_keymap_set_encoder(0, 0, false, KC_VOLD);
+    dynamic_keymap_set_encoder(1, 0, true, RM_VALU);
+    dynamic_keymap_set_encoder(1, 0, false, RM_VALD);
+    for (uint8_t layer = 2; layer < DYNAMIC_KEYMAP_LAYER_COUNT; layer++) {
+        dynamic_keymap_set_encoder(layer, 0, true, KC_TRNS);
+        dynamic_keymap_set_encoder(layer, 0, false, KC_TRNS);
+    }
+
+    // The preceding layout has the same seven-layer keymap storage. Preserve it.
+    via_eeprom_set_valid(true);
+}
+#    endif
+
+void keyboard_post_init_kb(void) {
+    eeconfig_confinfo_init();
+
+#    ifdef LED_POWER_EN_PIN
+    gpio_set_pin_output(LED_POWER_EN_PIN);
+    gpio_write_pin_high(LED_POWER_EN_PIN);
+#        ifdef HS_LED_BOOSTING_PIN
+    gpio_set_pin_output(HS_LED_BOOSTING_PIN);
+    gpio_write_pin_high(HS_LED_BOOSTING_PIN);
+#        endif
+#    endif
+
+#    ifdef USB_POWER_EN_PIN
+    gpio_write_pin_low(USB_POWER_EN_PIN);
+    gpio_set_pin_output(USB_POWER_EN_PIN);
+#    endif
+#    ifdef HS_BAT_CABLE_PIN
+    gpio_set_pin_input(HS_BAT_CABLE_PIN);
+#    endif
+#    ifdef BAT_FULL_PIN
+    gpio_set_pin_input(BAT_FULL_PIN);
+#    endif
+
+    wireless_init();
+    wireless_devs_change(!confinfo.devs, confinfo.devs, false);
+    post_init_timer = timer_read32();
+    keyboard_post_init_user();
+}
+
+void usb_power_connect(void) {
+#    ifdef USB_POWER_EN_PIN
+    gpio_write_pin_low(USB_POWER_EN_PIN);
+#    endif
+}
+
+void usb_power_disconnect(void) {
+#    ifdef USB_POWER_EN_PIN
+    gpio_write_pin_high(USB_POWER_EN_PIN);
+#    endif
+}
+
+void suspend_power_down_kb(void) {
+#    ifdef LED_POWER_EN_PIN
+    gpio_write_pin_low(LED_POWER_EN_PIN);
+#    endif
+    suspend_power_down_user();
+}
+
+void suspend_wakeup_init_kb(void) {
+#    ifdef LED_POWER_EN_PIN
+    gpio_write_pin_high(LED_POWER_EN_PIN);
+#    endif
+    wireless_devs_change(wireless_get_current_devs(), wireless_get_current_devs(), false);
+    suspend_wakeup_init_user();
+    hs_rgb_blink_set_timer(timer_read32());
+}
+
+
+void lpwr_stop_hook_pre(void) {
+#    ifdef LED_POWER_EN_PIN
+    gpio_write_pin_low(LED_POWER_EN_PIN);
+#    endif
+#    ifdef HS_LED_BOOSTING_PIN
+    gpio_write_pin_low(HS_LED_BOOSTING_PIN);
+#    endif
+
+    if (lower_sleep) {
+        md_send_devctrl(MD_SND_CMD_DEVCTRL_USB);
+        wait_ms(200);
+        lpwr_set_sleep_wakeupcd(LPWR_WAKEUP_UART);
+    }
+}
+
+void lpwr_wakeup_hook(void) {
+    hs_mode_scan(false, confinfo.devs, confinfo.last_btdevs);
+#    ifdef LED_POWER_EN_PIN
+    gpio_write_pin_high(LED_POWER_EN_PIN);
+#    endif
+#    ifdef HS_LED_BOOSTING_PIN
+    gpio_write_pin_high(HS_LED_BOOSTING_PIN);
+#    endif
+}
+
+void wireless_post_task(void) {
+    if (post_init_timer && timer_elapsed32(post_init_timer) >= 100) {
+        md_send_devctrl(MD_SND_CMD_DEVCTRL_FW_VERSION);
+        md_send_devctrl(MD_SND_CMD_DEVCTRL_SLEEP_BT_EN);
+        md_send_devctrl(MD_SND_CMD_DEVCTRL_SLEEP_2G4_EN);
+        wireless_devs_change(!confinfo.devs, confinfo.devs, false);
+        post_init_timer = 0;
+    }
+    hs_mode_scan(false, confinfo.devs, confinfo.last_btdevs);
+    clean_wireless_housekeeping();
+}
+
+static uint32_t pairing_long_press(uint32_t trigger_time, void *cb_arg) {
+    uint16_t keycode = *((uint16_t *)cb_arg);
+    uint8_t device = DEVS_USB;
+    (void)trigger_time;
+
+    switch (keycode) {
+        case KC_BT1:
+            device = DEVS_BT1;
+            break;
+        case KC_BT2:
+            device = DEVS_BT2;
+            break;
+        case KC_BT3:
+            device = DEVS_BT3;
+            break;
+        case KC_2G4:
+            device = DEVS_2G4;
+            break;
+        default:
+            return 0;
+    }
+
+    wireless_devs_change(wireless_get_current_devs(), device, true);
+    return 0;
+}
+
+static bool process_record_wireless(uint16_t keycode, keyrecord_t *record) {
+    static uint16_t pairing_keycode;
+    static deferred_token pairing_token = INVALID_DEFERRED_TOKEN;
+    uint8_t device;
+
+    switch (keycode) {
+        case KC_BT1:
+            device = DEVS_BT1;
+            break;
+        case KC_BT2:
+            device = DEVS_BT2;
+            break;
+        case KC_BT3:
+            device = DEVS_BT3;
+            break;
+        case KC_2G4:
+            device = DEVS_2G4;
+            break;
+        case KC_USB:
+            if (record->event.pressed) {
+                wireless_devs_change(wireless_get_current_devs(), DEVS_USB, false);
+            }
+            return false;
+        default:
+            return true;
+    }
+
+    if (record->event.pressed) {
+        pairing_keycode = keycode;
+        if (wireless_get_current_devs() != device) {
+            wireless_devs_change(wireless_get_current_devs(), device, false);
+        }
+        if (pairing_token == INVALID_DEFERRED_TOKEN) {
+            pairing_token = defer_exec(3000, pairing_long_press, &pairing_keycode);
+        }
+    } else {
+        if (pairing_token != INVALID_DEFERRED_TOKEN) {
+            cancel_deferred_exec(pairing_token);
+            pairing_token = INVALID_DEFERRED_TOKEN;
+        }
+    }
+
+    hs_rgb_blink_set_timer(timer_read32());
+    return false;
+}
+
+bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
+    return process_record_user(keycode, record) && process_record_wireless(keycode, record);
+}
+
+static void clean_wireless_housekeeping(void) {
+    static uint32_t module_timer;
+    static uint32_t empty_battery_timer;
+    bool usb_suspended;
+    uint8_t charging_command;
+
+    usb_suspended = wireless_get_current_devs() == DEVS_USB && USB_DRIVER.state != USB_ACTIVE;
+    if (usb_suspended) {
+        if (!usb_suspend_rgb_active) {
+            usb_suspend_rgb_was_enabled = rgb_matrix_is_enabled();
+            rgb_matrix_disable_noeeprom();
+            usb_suspend_rgb_active = true;
+        }
+    } else if (usb_suspend_rgb_active) {
+        if (usb_suspend_rgb_was_enabled) {
+            rgb_matrix_enable_noeeprom();
+        }
+        usb_suspend_rgb_active = false;
+    }
+
+    charging_state = gpio_read_pin(HS_BAT_CABLE_PIN);
+    bool battery_full = gpio_read_pin(BAT_FULL_PIN);
+
+    if (charging_state && battery_full) {
+        charging_command = MD_SND_CMD_DEVCTRL_CHARGING_DONE;
+    } else if (charging_state) {
+        charging_command = MD_SND_CMD_DEVCTRL_CHARGING;
+    } else {
+        charging_command = MD_SND_CMD_DEVCTRL_CHARGING_STOP;
+    }
+
+    if (!module_timer || timer_elapsed32(module_timer) > 1000) {
+        module_timer = timer_read32();
+        md_send_devctrl(charging_command);
+        md_send_devctrl(MD_SND_CMD_DEVCTRL_INQVOL);
+    }
+
+#    ifdef HS_LED_BOOSTING_PIN
+    gpio_write_pin(HS_LED_BOOSTING_PIN, !charging_state);
+#    endif
+
+    if (!charging_state && wireless_get_current_devs() != DEVS_USB && *md_getp_state() == MD_STATE_CONNECTED && *md_getp_bat() <= BATTERY_CAPACITY_STOP) {
+        if (!empty_battery_timer) {
+            empty_battery_timer = timer_read32();
+        } else if (timer_elapsed32(empty_battery_timer) > 20000) {
+            empty_battery_timer = 0;
+            lower_sleep = true;
+            lpwr_set_timeout_manual(false);
+        }
+    } else {
+        empty_battery_timer = 0;
+    }
+
+    housekeeping_task_user();
+}
+
+bool rgb_matrix_indicators_advanced_kb(uint8_t led_min, uint8_t led_max) {
+    if (!rgb_matrix_indicators_advanced_user(led_min, led_max)) {
+        return false;
+    }
+
+    if (wireless_indicator.active) {
+        uint32_t elapsed = timer_elapsed32(wireless_indicator.started);
+        if (elapsed >= wireless_indicator.duration) {
+            wireless_indicator.active = false;
+        } else if (wireless_indicator.index >= led_min && wireless_indicator.index < led_max && (elapsed / wireless_indicator.interval) % 2 == 0) {
+            rgb_matrix_set_color(wireless_indicator.index, wireless_indicator.color.r, wireless_indicator.color.g, wireless_indicator.color.b);
+        }
+    }
+
+    return true;
+}
+#elif defined(TIDE_ALICE66_WIRED_ONLY)
+#    include QMK_KEYBOARD_H
+
+/*
+ * The wired keymap deliberately uses QMK's normal USB and RGB Matrix paths.
+ * Keep the board-specific enables because the PCB RGB supply and USB pull-up
+ * are gated by these pins; wireless, battery, and per-position RGB hooks are
+ * compiled out below.
+ */
+void keyboard_post_init_kb(void) {
+#    ifdef LED_POWER_EN_PIN
+    gpio_set_pin_output(LED_POWER_EN_PIN);
+    gpio_write_pin_high(LED_POWER_EN_PIN);
+#        ifdef HS_LED_BOOSTING_PIN
+    gpio_set_pin_output(HS_LED_BOOSTING_PIN);
+    gpio_write_pin_high(HS_LED_BOOSTING_PIN);
+#        endif
+#    endif
+
+#    ifdef USB_POWER_EN_PIN
+    gpio_write_pin_low(USB_POWER_EN_PIN);
+    gpio_set_pin_output(USB_POWER_EN_PIN);
+#    endif
+
+    keyboard_post_init_user();
+}
+#else
 #include QMK_KEYBOARD_H
 #include "control/control.h"
 #include "rgb_record/rgb_record.h"
@@ -1220,3 +1619,4 @@ void hs_reset_settings(void) {
     hs_rgb_blink_set_timer(timer_read32());
     keyboard_post_init_kb();
 }
+#endif // TIDE_ALICE66_WIRED_ONLY
