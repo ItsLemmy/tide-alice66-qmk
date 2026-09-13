@@ -38,8 +38,6 @@ static bool battery_indicator_active;
 static uint32_t battery_indicator_started;
 bool charging_state;
 bool lower_sleep;
-static bool usb_suspend_rgb_active;
-static bool usb_suspend_rgb_was_enabled;
 static void clean_wireless_housekeeping(void);
 
 static bool is_supported_device(uint8_t device) {
@@ -343,22 +341,7 @@ bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
 static void clean_wireless_housekeeping(void) {
     static uint32_t module_timer;
     static uint32_t empty_battery_timer;
-    bool usb_suspended;
     uint8_t charging_command;
-
-    usb_suspended = wireless_get_current_devs() == DEVS_USB && USB_DRIVER.state != USB_ACTIVE;
-    if (usb_suspended) {
-        if (!usb_suspend_rgb_active) {
-            usb_suspend_rgb_was_enabled = rgb_matrix_is_enabled();
-            rgb_matrix_disable_noeeprom();
-            usb_suspend_rgb_active = true;
-        }
-    } else if (usb_suspend_rgb_active) {
-        if (usb_suspend_rgb_was_enabled) {
-            rgb_matrix_enable_noeeprom();
-        }
-        usb_suspend_rgb_active = false;
-    }
 
     charging_state = gpio_read_pin(HS_BAT_CABLE_PIN);
     bool battery_full = gpio_read_pin(BAT_FULL_PIN);
