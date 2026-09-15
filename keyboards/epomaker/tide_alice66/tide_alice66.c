@@ -71,23 +71,23 @@ static void wireless_indicator_start(uint8_t device, bool pairing) {
 
     switch (device) {
         case DEVS_BT1:
-            wireless_indicator.index = g_led_config.matrix_co[0][1];
+            wireless_indicator.index = g_led_config.matrix_co[1][1];
             wireless_indicator.color = (RGB){HS_PAIR_COLOR_BT1};
             break;
         case DEVS_BT2:
-            wireless_indicator.index = g_led_config.matrix_co[0][2];
+            wireless_indicator.index = g_led_config.matrix_co[1][2];
             wireless_indicator.color = (RGB){HS_PAIR_COLOR_BT2};
             break;
         case DEVS_BT3:
-            wireless_indicator.index = g_led_config.matrix_co[0][3];
+            wireless_indicator.index = g_led_config.matrix_co[1][3];
             wireless_indicator.color = (RGB){HS_PAIR_COLOR_BT3};
             break;
         case DEVS_2G4:
-            wireless_indicator.index = g_led_config.matrix_co[0][4];
+            wireless_indicator.index = g_led_config.matrix_co[1][10];
             wireless_indicator.color = (RGB){HS_PAIR_COLOR_2G4};
             break;
         default:
-            wireless_indicator.index = g_led_config.matrix_co[0][5];
+            wireless_indicator.index = g_led_config.matrix_co[1][4];
             wireless_indicator.color = (RGB){RGB_WHITE};
             break;
     }
