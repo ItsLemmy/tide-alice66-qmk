@@ -95,6 +95,7 @@ static void wireless_indicator_start(uint8_t device, bool pairing) {
 
 void wireless_devs_change_kb(uint8_t old_devs, uint8_t new_devs, bool reset) {
     (void)old_devs;
+    (void)reset;
 
     if (is_supported_device(new_devs)) {
         confinfo.devs = new_devs;
@@ -102,7 +103,6 @@ void wireless_devs_change_kb(uint8_t old_devs, uint8_t new_devs, bool reset) {
             confinfo.last_btdevs = new_devs;
         }
         eeconfig_confinfo_update();
-        wireless_indicator_start(new_devs, reset);
     }
 }
 
@@ -272,6 +272,7 @@ static uint32_t pairing_long_press(uint32_t trigger_time, void *cb_arg) {
     }
 
     wireless_devs_change(wireless_get_current_devs(), device, true);
+    wireless_indicator_start(device, true);
     return 0;
 }
 
@@ -296,6 +297,7 @@ static bool process_record_wireless(uint16_t keycode, keyrecord_t *record) {
         case KC_USB:
             if (record->event.pressed) {
                 wireless_devs_change(wireless_get_current_devs(), DEVS_USB, false);
+                wireless_indicator_start(DEVS_USB, false);
             }
             return false;
         default:
@@ -307,6 +309,7 @@ static bool process_record_wireless(uint16_t keycode, keyrecord_t *record) {
         if (wireless_get_current_devs() != device) {
             wireless_devs_change(wireless_get_current_devs(), device, false);
         }
+        wireless_indicator_start(device, false);
         if (pairing_token == INVALID_DEFERRED_TOKEN) {
             pairing_token = defer_exec(3000, pairing_long_press, &pairing_keycode);
         }
